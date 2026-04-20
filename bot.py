@@ -69,6 +69,12 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
+def count_user_bids(state: dict, user_id: int) -> int:
+    return sum(
+        1 for entry in state.get("bid_log", [])
+        if entry.get("valid") and entry.get("bidder_id") == user_id
+    )
+
 
 def dt_to_str(dt: datetime) -> str:
     return dt.isoformat()
@@ -479,17 +485,23 @@ async def open_bid(interaction: discord.Interaction, toon: str, amount: int, min
 @bot.tree.command(name="bid", description="Place an outbid")
 @app_commands.describe(
     toon="The toon name you are bidding on",
-    amount="Your bid amount",
+    amount="Your bid amount"
 )
 async def bid(interaction: discord.Interaction, toon: str, amount: int):
     channel = interaction.channel
 
-    if not is_allowed_channel(channel):
-        await interaction.response.send_message("Use this in bid channels only.", ephemeral=True)
+    if not isinstance(channel, discord.Thread):
+        await interaction.response.send_message(
+            "Bids must be placed inside a bid thread.",
+            ephemeral=True
+        )
         return
 
-    if channel is None:
-        await interaction.response.send_message("Channel not found.", ephemeral=True)
+    if not is_allowed_channel(channel):
+        await interaction.response.send_message(
+            "This is not a valid bidding channel.",
+            ephemeral=True
+        )
         return
 
     state = get_state(channel.id)
@@ -500,83 +512,71 @@ async def bid(interaction: discord.Interaction, toon: str, amount: int):
         )
         return
 
-    if state["phase"] == 3 or state["closed"]:
-        await interaction.response.send_message("🔒 Bidding is closed for this item.", ephemeral=True)
+    # ✅ LIMIT: max 7 bids per user
+    user_bid_count = count_user_bids(state, interaction.user.id)
+
+    if user_bid_count >= 7:
+        await interaction.response.send_message(
+            f"❌ You have reached the maximum of 7 bids for this item. ({user_bid_count}/7)",
+            ephemeral=True
+        )
         return
 
     if amount <= 0:
-        await interaction.response.send_message("Bid amount must be greater than 0.", ephemeral=True)
-        return
-
-    phase1_bidders = state.get("phase1_bidders", set())
-    if state["phase"] == 2 and phase1_bidders and interaction.user.id not in phase1_bidders:
         await interaction.response.send_message(
-            "⏰ Bidding is in Phase 2 and restricted to users who placed a valid bid in the first 24 hours.",
-            ephemeral=True,
+            "Bid must be greater than 0.",
+            ephemeral=True
         )
         return
 
-    current_bid = state["current_bid"]
-    minimum_valid = current_bid + state["outbid_inc"]
+    current = state["current_bid"]
+    min_bid = state["min_bid"]
+    min_outbid = state["outbid_inc"]
 
-    if amount < minimum_valid:
-        await interaction.response.send_message(
-            f"❌ Invalid bid. Current bid is **{current_bid:,}**. "
-            f"Minimum outbid is **{state['outbid_inc']:,}**, so next valid bid is **{minimum_valid:,}**.",
-            ephemeral=True,
-        )
+    # First bid case
+    if current is None:
+        if amount < min_bid:
+            await interaction.response.send_message(
+                f"Opening bid must be at least {min_bid}.",
+                ephemeral=True
+            )
+            return
 
-        add_bid_log(
-            state=state,
-            toon=toon,
-            amount=amount,
-            bidder_id=interaction.user.id,
-            message_id=None,
-            valid=False,
-            reason=f"Below required minimum valid bid of {minimum_valid}",
-        )
-        save_state()
-        return
+    else:
+        required = current + min_outbid
+        if amount < required:
+            await interaction.response.send_message(
+                f"You must bid at least {required}.",
+                ephemeral=True
+            )
+            return
 
-    previous_bidder_id = state.get("current_bidder_id")
-    mentions = [interaction.user.mention]
-
-    if previous_bidder_id and previous_bidder_id != interaction.user.id:
-        mentions.append(f"<@{previous_bidder_id}>")
-
-    await interaction.response.send_message(
-        f"{toon} {amount:,} {' '.join(mentions)}",
-        allowed_mentions=discord.AllowedMentions(users=True),
-    )
-
-    sent = await interaction.original_response()
-    now_str = dt_to_str(utcnow())
-
+        # ✅ VALID BID → update state
     state["current_bid"] = amount
     state["current_toon"] = toon
     state["current_bidder_id"] = interaction.user.id
-    state["last_bid_time"] = now_str
-    state["phase1_bidders"].add(interaction.user.id)
+    state["last_bid_time"] = datetime.now(timezone.utc).isoformat()
 
-    state["last_valid_bid"] = {
+    # log bid
+    state.setdefault("bid_log", []).append({
         "toon": toon,
         "amount": amount,
         "bidder_id": interaction.user.id,
-        "message_id": sent.id,
-        "timestamp": now_str,
-    }
+        "message_id": None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "valid": True,
+        "reason": None,
+    })
 
-    add_bid_log(
-        state=state,
-        toon=toon,
-        amount=amount,
-        bidder_id=interaction.user.id,
-        message_id=sent.id,
-        valid=True,
-        reason=None,
+    remaining = 7 - (user_bid_count + 1)
+
+    await interaction.response.send_message(
+        f"💰 **New Bid!**\n"
+        f"{toon} → {amount:,}\n"
+        f"Next min: {amount + min_outbid:,}\n"
+        f"Bids remaining: {remaining}/7",
+        allowed_mentions=discord.AllowedMentions.none()
     )
-    save_state()
-
 
 @bot.tree.command(name="review", description="Flag a concern for leaders")
 @app_commands.describe(reason="Briefly describe the issue")
