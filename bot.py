@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+
 LEADER_ROLE_IDS = [
     1415053351116079219,  # main server
     149584430766731069,   # test server role
@@ -33,14 +34,15 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# In-memory state
+bid_state: dict[int, dict] = {}
+
 
 def is_leader(member: discord.Member | discord.User | None, guild: discord.Guild | None) -> bool:
     if member is None or guild is None:
         return False
-
     if not isinstance(member, discord.Member):
         return False
-
     return any(role.id in LEADER_ROLE_IDS for role in member.roles)
 
 
@@ -58,6 +60,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             f"Error: {type(error).__name__}: {error}",
             ephemeral=True
         )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -91,69 +94,51 @@ def is_allowed_channel(channel) -> bool:
     return False
 
 
-def is_leader(member: discord.Member | discord.User | None, guild: discord.Guild | None) -> bool:
-    if member is None or guild is None or not isinstance(member, discord.Member):
-        return False
-    role = guild.get_role(LEADER_ROLE_ID)
-    return role in member.roles if role else False
-
-
 def min_outbid_from_min_bid(min_bid: int) -> int:
     return max(1, int(min_bid * OUTBID_INCREMENT))
+
+
+def phase_label(phase: int) -> str:
+    return {
+        1: "Phase 1 — Open",
+        2: "Phase 2 — Restricted",
+        3: "Closed",
+    }.get(phase, "Unknown")
+
+
+def serialize_state() -> dict:
+    payload = {}
+    for thread_id, state in bid_state.items():
+        copy_state = dict(state)
+        copy_state["phase1_bidders"] = list(state.get("phase1_bidders", set()))
+        payload[str(thread_id)] = copy_state
+    return payload
+
+
+def deserialize_state(raw: dict) -> dict[int, dict]:
+    restored = {}
+    for thread_id_str, state in raw.items():
+        restored[int(thread_id_str)] = {
+            **state,
+            "phase1_bidders": set(state.get("phase1_bidders", [])),
+        }
+    return restored
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Persistent state
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Shape:
-# bid_state = {
-#   "thread_id": {
-#       "phase": 1|2|3,
-#       "phase1_start": iso str,
-#       "last_bid_time": iso str,
-#       "phase1_bidders": [user_id, ...],
-#       "current_bid": int,
-#       "current_toon": str,
-#       "current_bidder_id": int,
-#       "min_bid": int,
-#       "outbid_inc": int,
-#       "closed": bool,
-#       "phase2_announced": bool,
-#       "closed_announced": bool,
-#       "last_valid_bid": {
-#           "toon": str,
-#           "amount": int,
-#           "bidder_id": int,
-#           "message_id": int | None,
-#           "timestamp": iso str,
-#       } | None,
-#       "bid_log": [
-#           {
-#               "toon": str,
-#               "amount": int,
-#               "bidder_id": int,
-#               "message_id": int | None,
-#               "timestamp": iso str,
-#               "valid": bool,
-#               "reason": str | None,
-#           }
-#       ]
-#   }
-# }
-bid_state: dict[int, dict] = {}
-
-
 def save_state() -> None:
     ensure_data_dir()
-    serializable = {str(k): v for k, v in bid_state.items()}
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(serializable, f, indent=2)
+        json.dump(serialize_state(), f, indent=2)
 
 
 def load_state() -> None:
     global bid_state
     ensure_data_dir()
+
     if not os.path.exists(DATA_FILE):
         bid_state = {}
         return
@@ -161,7 +146,7 @@ def load_state() -> None:
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
-    bid_state = {int(k): v for k, v in raw.items()}
+    bid_state = deserialize_state(raw)
 
 
 def get_state(thread_id: int) -> dict | None:
@@ -176,7 +161,7 @@ def init_state(thread_id: int, toon: str, amount: int, min_bid: int, bidder_id: 
         "phase": 1,
         "phase1_start": dt_to_str(now),
         "last_bid_time": dt_to_str(now),
-        "phase1_bidders": [bidder_id],
+        "phase1_bidders": {bidder_id},
         "current_bid": amount,
         "current_toon": toon,
         "current_bidder_id": bidder_id,
@@ -206,7 +191,6 @@ def init_state(thread_id: int, toon: str, amount: int, min_bid: int, bidder_id: 
     }
 
     bid_state[thread_id] = state
-    save_state()
     return state
 
 
@@ -230,7 +214,6 @@ def add_bid_log(
             "reason": reason,
         }
     )
-    save_state()
 
 
 def recalc_last_valid_bid(state: dict) -> None:
@@ -247,22 +230,12 @@ def recalc_last_valid_bid(state: dict) -> None:
             state["current_bid"] = entry["amount"]
             state["current_bidder_id"] = entry["bidder_id"]
             state["last_bid_time"] = entry["timestamp"]
-            save_state()
             return
 
     state["last_valid_bid"] = None
     state["current_toon"] = ""
     state["current_bid"] = 0
     state["current_bidder_id"] = 0
-    save_state()
-
-
-def phase_label(phase: int) -> str:
-    return {
-        1: "Phase 1 — Open",
-        2: "Phase 2 — Restricted",
-        3: "Closed",
-    }.get(phase, "Unknown")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -303,8 +276,6 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # Allow the first human message in the thread after creation
-    # so the opening forum/thread post with image/text is not flagged.
     try:
         human_messages = []
         async for msg in channel.history(oldest_first=True, limit=20):
@@ -342,6 +313,7 @@ async def on_message(message: discord.Message):
 @tasks.loop(minutes=1)
 async def phase_checker():
     now = utcnow()
+    dirty = False
 
     for thread_id, state in list(bid_state.items()):
         if state.get("closed") or state.get("phase") == 3:
@@ -351,11 +323,7 @@ async def phase_checker():
         if thread is None:
             try:
                 thread = await bot.fetch_channel(thread_id)
-            except discord.NotFound:
-                continue
-            except discord.Forbidden:
-                continue
-            except discord.HTTPException:
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 continue
 
         phase1_start = str_to_dt(state["phase1_start"])
@@ -364,12 +332,12 @@ async def phase_checker():
         if phase1_start is None or last_bid_time is None:
             continue
 
-        # Move to phase 2 after 24h
         if state["phase"] == 1 and now >= phase1_start + timedelta(hours=24):
             state["phase"] = 2
+            dirty = True
 
             if not state["phase2_announced"]:
-                bidders = state.get("phase1_bidders", [])
+                bidders = state.get("phase1_bidders", set())
                 if bidders:
                     mentions = " ".join(f"<@{uid}>" for uid in bidders)
                     msg = (
@@ -388,12 +356,12 @@ async def phase_checker():
                     )
 
                 state["phase2_announced"] = True
-                save_state()
+                dirty = True
 
-        # Close 12h after last valid bid once in phase 2
         if state["phase"] == 2 and now >= last_bid_time + timedelta(hours=12):
             state["phase"] = 3
             state["closed"] = True
+            dirty = True
 
             if not state["closed_announced"]:
                 last_valid = state.get("last_valid_bid")
@@ -411,13 +379,14 @@ async def phase_checker():
                 try:
                     if isinstance(thread, discord.Thread):
                         await thread.edit(locked=True)
-                except discord.Forbidden:
-                    pass
-                except discord.HTTPException:
+                except (discord.Forbidden, discord.HTTPException):
                     pass
 
                 state["closed_announced"] = True
-                save_state()
+                dirty = True
+
+    if dirty:
+        save_state()
 
 
 @phase_checker.before_loop
@@ -432,6 +401,7 @@ async def before_phase_checker():
 @bot.tree.command(name="ping")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("pong")
+
 
 @bot.tree.command(name="open", description="Open a new bid thread")
 @app_commands.describe(
@@ -489,6 +459,7 @@ async def open_bid(interaction: discord.Interaction, toon: str, amount: int, min
         bidder_id=interaction.user.id,
         message_id=sent.id,
     )
+    save_state()
 
 
 @bot.tree.command(name="bid", description="Place an outbid")
@@ -523,8 +494,7 @@ async def bid(interaction: discord.Interaction, toon: str, amount: int):
         await interaction.response.send_message("Bid amount must be greater than 0.", ephemeral=True)
         return
 
-    # Phase 2 restriction
-    phase1_bidders = state.get("phase1_bidders", [])
+    phase1_bidders = state.get("phase1_bidders", set())
     if state["phase"] == 2 and phase1_bidders and interaction.user.id not in phase1_bidders:
         await interaction.response.send_message(
             "⏰ Bidding is in Phase 2 and restricted to users who placed a valid bid in the first 24 hours.",
@@ -542,25 +512,16 @@ async def bid(interaction: discord.Interaction, toon: str, amount: int):
             ephemeral=True,
         )
 
-        # visible invalid record in-thread
-        invalid_msg = await channel.send(
-            f"❌ Invalid bid by {interaction.user.mention}: {toon} {amount:,}",
-            allowed_mentions=discord.AllowedMentions(users=True),
-        )
-        try:
-            await invalid_msg.add_reaction("❌")
-        except discord.HTTPException:
-            pass
-
         add_bid_log(
             state=state,
             toon=toon,
             amount=amount,
             bidder_id=interaction.user.id,
-            message_id=invalid_msg.id,
+            message_id=None,
             valid=False,
             reason=f"Below required minimum valid bid of {minimum_valid}",
         )
+        save_state()
         return
 
     previous_bidder_id = state.get("current_bidder_id")
@@ -575,21 +536,20 @@ async def bid(interaction: discord.Interaction, toon: str, amount: int):
     )
 
     sent = await interaction.original_response()
+    now_str = dt_to_str(utcnow())
 
     state["current_bid"] = amount
     state["current_toon"] = toon
     state["current_bidder_id"] = interaction.user.id
-    state["last_bid_time"] = dt_to_str(utcnow())
-
-    if state["phase"] == 1 and interaction.user.id not in state["phase1_bidders"]:
-        state["phase1_bidders"].append(interaction.user.id)
+    state["last_bid_time"] = now_str
+    state["phase1_bidders"].add(interaction.user.id)
 
     state["last_valid_bid"] = {
         "toon": toon,
         "amount": amount,
         "bidder_id": interaction.user.id,
         "message_id": sent.id,
-        "timestamp": dt_to_str(utcnow()),
+        "timestamp": now_str,
     }
 
     add_bid_log(
@@ -615,13 +575,10 @@ async def review(interaction: discord.Interaction, reason: str):
         await interaction.response.send_message("Guild not found.", ephemeral=True)
         return
 
-    role = interaction.guild.get_role(LEADER_ROLE_ID)
-    if role is None:
-        await interaction.response.send_message("Leader role not found.", ephemeral=True)
-        return
+    mentions = [f"<@&{role_id}>" for role_id in LEADER_ROLE_IDS]
 
     await interaction.response.send_message(
-        f"{role.mention} Review requested by {interaction.user.mention}: {reason}",
+        f"{' '.join(mentions)} Review requested by {interaction.user.mention}: {reason}",
         allowed_mentions=discord.AllowedMentions(roles=True, users=True),
     )
 
@@ -705,6 +662,59 @@ async def pay(interaction: discord.Interaction):
                 f"/pay crashed: {type(e).__name__}: {e}",
                 ephemeral=True
             )
+
+
+@bot.tree.command(name="bidinfo", description="Show current bid info for this thread")
+async def bidinfo(interaction: discord.Interaction):
+    if not is_allowed_channel(interaction.channel):
+        await interaction.response.send_message("Use this in bid channels only.", ephemeral=True)
+        return
+
+    channel = interaction.channel
+    if channel is None:
+        await interaction.response.send_message("Channel not found.", ephemeral=True)
+        return
+
+    state = get_state(channel.id)
+    if state is None:
+        await interaction.response.send_message("No bid is open in this thread.", ephemeral=True)
+        return
+
+    now = utcnow()
+    phase1_start = str_to_dt(state["phase1_start"])
+    last_bid_time = str_to_dt(state["last_bid_time"])
+
+    phase2_eta = "N/A"
+    close_eta = "N/A"
+
+    if phase1_start and state["phase"] == 1:
+        delta = (phase1_start + timedelta(hours=24)) - now
+        total = max(int(delta.total_seconds()), 0)
+        h, m = divmod(total // 60, 60)
+        phase2_eta = f"{h}h {m}m"
+
+    if last_bid_time and state["phase"] == 2:
+        delta = (last_bid_time + timedelta(hours=12)) - now
+        total = max(int(delta.total_seconds()), 0)
+        h, m = divmod(total // 60, 60)
+        close_eta = f"{h}h {m}m"
+
+    next_valid = state["current_bid"] + state["outbid_inc"]
+    bidder_count = len(state.get("phase1_bidders", set()))
+
+    await interaction.response.send_message(
+        f"📊 **Bid Status**\n"
+        f"Toon: **{state['current_toon']}**\n"
+        f"Current Bid: **{state['current_bid']:,}**\n"
+        f"Min Bid: **{state['min_bid']:,}**\n"
+        f"Min Outbid: **{state['outbid_inc']:,}**\n"
+        f"Next Valid Bid: **{next_valid:,}**\n"
+        f"Phase: **{phase_label(state['phase'])}**\n"
+        f"Eligible Phase 2 Bidders: **{bidder_count}**\n"
+        f"Phase 2 Starts In: **{phase2_eta}**\n"
+        f"Close In: **{close_eta}**",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="setminbid", description="Change the minimum bid for this thread")
