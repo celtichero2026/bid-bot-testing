@@ -257,41 +257,52 @@ async def on_ready():
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
+        await bot.process_commands(message)
         return
 
     channel = message.channel
 
-    # Only moderate thread chatter in allowed threads
-    if isinstance(channel, discord.Thread) and is_allowed_channel(channel):
-        # Do nothing unless this thread already has an active/opened auction
-        state = get_state(channel.id)
-        if state is None:
+    if not isinstance(channel, discord.Thread):
+        await bot.process_commands(message)
+        return
+
+    if not is_allowed_channel(channel):
+        await bot.process_commands(message)
+        return
+
+    state = get_state(channel.id)
+    if state is None:
+        await bot.process_commands(message)
+        return
+
+    # Allow the first human message in the thread after creation
+    # so the opening forum/thread post with image/text is not flagged.
+    try:
+        human_messages = []
+        async for msg in channel.history(oldest_first=True, limit=20):
+            if not msg.author.bot:
+                human_messages.append(msg.id)
+
+        if human_messages and message.id == human_messages[0]:
             await bot.process_commands(message)
             return
+    except discord.HTTPException:
+        pass
 
-        # Allow the thread starter message to exist without warning
-        if message.id == channel.id:
-            await bot.process_commands(message)
-            return
+    try:
+        await message.add_reaction("❌")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
-        try:
-            await message.add_reaction("❌")
-        except discord.Forbidden:
-            pass
-        except discord.HTTPException:
-            pass
-
-        try:
-            await channel.send(
-                f"{message.author.mention} Please keep this thread clean. "
-                "Use `/bid` to bid or `/review` if something needs leader attention.",
-                delete_after=12,
-                allowed_mentions=discord.AllowedMentions(users=True),
-            )
-        except discord.Forbidden:
-            pass
-        except discord.HTTPException:
-            pass
+    try:
+        await channel.send(
+            f"{message.author.mention} Please keep this thread clean. "
+            "Use `/bid` to bid or `/review` if something needs leader attention.",
+            delete_after=12,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
     await bot.process_commands(message)
 
@@ -398,14 +409,9 @@ async def before_phase_checker():
 )
 async def open_bid(interaction: discord.Interaction, toon: str, amount: int, min_bid: int):
     channel = interaction.channel
-    guild = interaction.guild
 
     if not is_allowed_channel(channel):
         await interaction.response.send_message("Use this in bid channels only.", ephemeral=True)
-        return
-
-    if guild is None or not is_leader(interaction.user, guild):
-        await interaction.response.send_message("Only leaders can open a bid.", ephemeral=True)
         return
 
     if channel is None:
@@ -433,13 +439,13 @@ async def open_bid(interaction: discord.Interaction, toon: str, amount: int, min
         )
         return
 
-    outbid_inc = min_outbid_from_min_bid(min_bid)
+     outbid_inc = min_outbid_from_min_bid(min_bid)
 
-   await interaction.response.send_message(
-    f"✅ Bid opened\n"
-    f"{toon} {amount:,} | Min bid: {min_bid:,} | Min outbid: {outbid_inc:,}",
-    allowed_mentions=discord.AllowedMentions.none(),
-)
+    await interaction.response.send_message(
+        f"✅ Bid opened\n"
+        f"{toon} {amount:,} | Min bid: {min_bid:,} | Min outbid: {outbid_inc:,}",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
     sent = await interaction.original_response()
 
