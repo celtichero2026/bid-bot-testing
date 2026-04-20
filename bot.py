@@ -439,7 +439,7 @@ async def open_bid(interaction: discord.Interaction, toon: str, amount: int, min
         )
         return
 
-     outbid_inc = min_outbid_from_min_bid(min_bid)
+    outbid_inc = min_outbid_from_min_bid(min_bid)
 
     await interaction.response.send_message(
         f"✅ Bid opened\n"
