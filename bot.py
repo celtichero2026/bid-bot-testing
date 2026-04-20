@@ -1,5 +1,6 @@
 import os
 import json
+import traceback
 from datetime import datetime, timezone, timedelta
 
 import discord
@@ -9,8 +10,29 @@ from discord import app_commands
 TOKEN = os.getenv("DISCORD_TOKEN")
 LEADER_ROLE_IDS = [
     1415053351116079219,  # main server
-    1495844307666731069,   # test server role
+    149584430766731069,   # test server role
 ]
+
+ALLOWED_CHANNEL_IDS = [
+    1447764043090755646,  # Druid
+    1447764333894434837,  # Mage
+    1447764834132295782,  # Warrior
+    1447765010800578782,  # Rogue
+    1447765179172524184,  # Ranger
+    1447765439366168687,  # No Class Required
+    1491844512828489918,  # TEST SERVER
+]
+
+OUTBID_INCREMENT = 0.10
+DATA_DIR = os.getenv("BIDBOT_DATA_DIR", "./data")
+DATA_FILE = os.path.join(DATA_DIR, "bid_state.json")
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.messages = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
 
 def is_leader(member: discord.Member | discord.User | None, guild: discord.Guild | None) -> bool:
     if member is None or guild is None:
@@ -21,7 +43,6 @@ def is_leader(member: discord.Member | discord.User | None, guild: discord.Guild
 
     return any(role.id in LEADER_ROLE_IDS for role in member.roles)
 
-import traceback
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -37,30 +58,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             f"Error: {type(error).__name__}: {error}",
             ephemeral=True
         )
-
-
-
-ALLOWED_CHANNEL_IDS = [
-    1447764043090755646,  # Druid
-    1447764333894434837,  # Mage
-    1447764834132295782,  # Warrior
-    1447765010800578782,  # Rogue
-    1447765179172524184,  # Ranger
-    1447765439366168687,  # No Class Required
-
-    1491844512828489918,  # TEST SERVER
-]
-
-OUTBID_INCREMENT = 0.10
-DATA_DIR = os.getenv("BIDBOT_DATA_DIR", "./data")
-DATA_FILE = os.path.join(DATA_DIR, "bid_state.json")
-
-intents = discord.Intents.default()
-intents.message_content = True
-intents.messages = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
