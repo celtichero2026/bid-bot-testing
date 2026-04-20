@@ -604,83 +604,83 @@ async def review(interaction: discord.Interaction, reason: str):
 
 @bot.tree.command(name="pay", description="Generate %pay from the last valid bid")
 async def pay(interaction: discord.Interaction):
-    if not is_allowed_channel(interaction.channel):
-        await interaction.response.send_message("Use this in bid channels only.", ephemeral=True)
-        return
+    try:
+        if not is_allowed_channel(interaction.channel):
+            await interaction.response.send_message(
+                "Use this in bid channels only.",
+                ephemeral=True
+            )
+            return
 
-    if interaction.guild is None or not is_leader(interaction.user, interaction.guild):
-        await interaction.response.send_message("Only leaders can use `/pay`.", ephemeral=True)
-        return
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "This command must be used in a server.",
+                ephemeral=True
+            )
+            return
 
-    channel = interaction.channel
-    if channel is None:
-        await interaction.response.send_message("Channel not found.", ephemeral=True)
-        return
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "Could not verify your server roles.",
+                ephemeral=True
+            )
+            return
 
-    state = get_state(channel.id)
-    if state is None:
-        await interaction.response.send_message("No open auction found in this thread.", ephemeral=True)
-        return
+        if not is_leader(interaction.user, interaction.guild):
+            await interaction.response.send_message(
+                "Only leaders can use `/pay`.",
+                ephemeral=True
+            )
+            return
 
-    last_valid = state.get("last_valid_bid")
-    if not last_valid:
-        await interaction.response.send_message("No valid bid found.", ephemeral=True)
-        return
+        channel = interaction.channel
+        if channel is None:
+            await interaction.response.send_message(
+                "Channel not found.",
+                ephemeral=True
+            )
+            return
 
-    await interaction.response.send_message(f"%pay {last_valid['toon']} {last_valid['amount']}")
+        state = get_state(channel.id)
+        if state is None:
+            await interaction.response.send_message(
+                "No open auction found in this thread.",
+                ephemeral=True
+            )
+            return
 
+        last_valid = state.get("last_valid_bid")
+        if not last_valid:
+            await interaction.response.send_message(
+                "No valid bid found.",
+                ephemeral=True
+            )
+            return
 
-@bot.tree.command(name="bidinfo", description="Show current bid info for this thread")
-async def bidinfo(interaction: discord.Interaction):
-    if not is_allowed_channel(interaction.channel):
-        await interaction.response.send_message("Use this in bid channels only.", ephemeral=True)
-        return
+        toon = last_valid.get("toon")
+        amount = last_valid.get("amount")
 
-    channel = interaction.channel
-    if channel is None:
-        await interaction.response.send_message("Channel not found.", ephemeral=True)
-        return
+        if not toon or amount is None:
+            await interaction.response.send_message(
+                "Last valid bid data is incomplete.",
+                ephemeral=True
+            )
+            return
 
-    state = get_state(channel.id)
-    if state is None:
-        await interaction.response.send_message("No bid is open in this thread.", ephemeral=True)
-        return
+        await interaction.response.send_message(f"%pay {toon} {amount}")
 
-    now = utcnow()
-    phase1_start = str_to_dt(state["phase1_start"])
-    last_bid_time = str_to_dt(state["last_bid_time"])
-
-    phase2_eta = "N/A"
-    close_eta = "N/A"
-
-    if phase1_start and state["phase"] == 1:
-        delta = (phase1_start + timedelta(hours=24)) - now
-        total = max(int(delta.total_seconds()), 0)
-        h, m = divmod(total // 60, 60)
-        phase2_eta = f"{h}h {m}m"
-
-    if last_bid_time and state["phase"] == 2:
-        delta = (last_bid_time + timedelta(hours=12)) - now
-        total = max(int(delta.total_seconds()), 0)
-        h, m = divmod(total // 60, 60)
-        close_eta = f"{h}h {m}m"
-
-    next_valid = state["current_bid"] + state["outbid_inc"]
-    bidder_count = len(state.get("phase1_bidders", []))
-
-    await interaction.response.send_message(
-        f"📊 **Bid Status**\n"
-        f"Toon: **{state['current_toon']}**\n"
-        f"Current Bid: **{state['current_bid']:,}**\n"
-        f"Min Bid: **{state['min_bid']:,}**\n"
-        f"Min Outbid: **{state['outbid_inc']:,}**\n"
-        f"Next Valid Bid: **{next_valid:,}**\n"
-        f"Phase: **{phase_label(state['phase'])}**\n"
-        f"Eligible Phase 2 Bidders: **{bidder_count}**\n"
-        f"Phase 2 Starts In: **{phase2_eta}**\n"
-        f"Close In: **{close_eta}**",
-        ephemeral=True,
-    )
+    except Exception as e:
+        print(f"/pay crashed: {repr(e)}")
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                f"/pay crashed: {type(e).__name__}: {e}",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"/pay crashed: {type(e).__name__}: {e}",
+                ephemeral=True
+            )
 
 
 @bot.tree.command(name="setminbid", description="Change the minimum bid for this thread")
