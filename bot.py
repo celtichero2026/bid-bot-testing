@@ -276,6 +276,20 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
+    content = (message.content or "").strip().lower()
+
+    # Allow payout and other approved utility commands in bid threads
+    ALLOWED_THREAD_PREFIXES = (
+        "%pay",
+        "%undo",
+        "%refund",
+    )
+
+    if any(content.startswith(prefix) for prefix in ALLOWED_THREAD_PREFIXES):
+        await bot.process_commands(message)
+        return
+
+    # Allow the first human message in the thread after creation
     try:
         human_messages = []
         async for msg in channel.history(oldest_first=True, limit=20):
@@ -296,7 +310,7 @@ async def on_message(message: discord.Message):
     try:
         await channel.send(
             f"{message.author.mention} Please keep this thread clean. "
-            "Use `/bid` to bid or `/review` if something needs leader attention.",
+            "Use `/bid` to bid, `/review` for concerns, or approved mod payout commands.",
             delete_after=12,
             allowed_mentions=discord.AllowedMentions(users=True),
         )
@@ -371,7 +385,7 @@ async def phase_checker():
                     await thread.send(
                         "🔒 **Bidding Closed**\n"
                         f"Final bid: **{toon}** — **{amount:,}**\n"
-                        f"Moderators: `%pay {toon} {amount}`"
+                        f"Cash out with: `%pay {toon} {amount}`"
                     )
                 else:
                     await thread.send("🔒 **Bidding Closed** — No valid bids recorded.")
@@ -583,87 +597,6 @@ async def review(interaction: discord.Interaction, reason: str):
     )
 
 
-@bot.tree.command(name="pay", description="Generate %pay from the last valid bid")
-async def pay(interaction: discord.Interaction):
-    try:
-        if not is_allowed_channel(interaction.channel):
-            await interaction.response.send_message(
-                "Use this in bid channels only.",
-                ephemeral=True
-            )
-            return
-
-        if interaction.guild is None:
-            await interaction.response.send_message(
-                "This command must be used in a server.",
-                ephemeral=True
-            )
-            return
-
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message(
-                "Could not verify your server roles.",
-                ephemeral=True
-            )
-            return
-
-        if not is_leader(interaction.user, interaction.guild):
-            await interaction.response.send_message(
-                "Only leaders can use `/pay`.",
-                ephemeral=True
-            )
-            return
-
-        channel = interaction.channel
-        if channel is None:
-            await interaction.response.send_message(
-                "Channel not found.",
-                ephemeral=True
-            )
-            return
-
-        state = get_state(channel.id)
-        if state is None:
-            await interaction.response.send_message(
-                "No open auction found in this thread.",
-                ephemeral=True
-            )
-            return
-
-        last_valid = state.get("last_valid_bid")
-        if not last_valid:
-            await interaction.response.send_message(
-                "No valid bid found.",
-                ephemeral=True
-            )
-            return
-
-        toon = last_valid.get("toon")
-        amount = last_valid.get("amount")
-
-        if not toon or amount is None:
-            await interaction.response.send_message(
-                "Last valid bid data is incomplete.",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_message(f"%pay {toon} {amount}")
-
-    except Exception as e:
-        print(f"/pay crashed: {repr(e)}")
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                f"/pay crashed: {type(e).__name__}: {e}",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"/pay crashed: {type(e).__name__}: {e}",
-                ephemeral=True
-            )
-
-
 @bot.tree.command(name="bidinfo", description="Show current bid info for this thread")
 async def bidinfo(interaction: discord.Interaction):
     if not is_allowed_channel(interaction.channel):
@@ -844,7 +777,7 @@ async def closebid(interaction: discord.Interaction):
         await interaction.response.send_message(
             f"🔒 Bid closed manually.\n"
             f"Final bid: **{last_valid['toon']} {last_valid['amount']:,}**\n"
-            f"Moderators: `%pay {last_valid['toon']} {last_valid['amount']}`"
+            f"Cash out with: `%pay {last_valid['toon']} {last_valid['amount']}`"
         )
     else:
         await interaction.response.send_message("🔒 Bid closed manually. No valid bids recorded.")
